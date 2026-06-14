@@ -18,6 +18,7 @@ import re
 from dotenv import load_dotenv
 from groq import Groq
 
+from config import LLM_MODEL
 from utils.data_loader import load_listings
 
 load_dotenv()
@@ -33,6 +34,22 @@ def _get_groq_client():
             "GROQ_API_KEY not set. Add it to a .env file in the project root."
         )
     return Groq(api_key=api_key)
+
+
+def _complete(messages: list[dict], temperature: float) -> str:
+    """Send a chat completion to Groq and return the response text.
+
+    Factored out so the LLM-backed tools (suggest_outfit, create_fit_card) can
+    be unit-tested by monkeypatching this single function instead of mocking
+    the whole Groq client.
+    """
+    client = _get_groq_client()
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=messages,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content or ""
 
 
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
@@ -161,8 +178,71 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    items = wardrobe.get("items", []) if isinstance(wardrobe, dict) else []
+    item_desc = _describe_listing(new_item)
+
+    system = (
+        "You are a thoughtful personal stylist who specializes in thrifted and "
+        "secondhand fashion. Keep your suggestions concrete, wearable, and concise."
+    )
+
+    if items:
+        closet = "\n".join(_describe_wardrobe_item(w) for w in items)
+        user = (
+            f"I'm considering buying this secondhand piece:\n{item_desc}\n\n"
+            f"Here is what's already in my wardrobe:\n{closet}\n\n"
+            "Suggest 1-2 complete outfits that pair the new piece with specific, "
+            "named items from my wardrobe above. Refer to my pieces by name and "
+            "briefly say why each outfit works."
+        )
+    else:
+        user = (
+            f"I'm considering buying this secondhand piece:\n{item_desc}\n\n"
+            "I haven't entered my wardrobe yet, so give me general styling advice "
+            "for this piece: what kinds of items pair well with it, what vibe or "
+            "occasions it suits, and 1-2 example outfit ideas."
+        )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    try:
+        reply = _complete(messages, temperature=0.7).strip()
+    except Exception:
+        return _OUTFIT_FALLBACK
+
+    return reply or _OUTFIT_FALLBACK
+
+
+_OUTFIT_FALLBACK = (
+    "I couldn't generate outfit ideas right now, but this piece is versatile — "
+    "try pairing it with neutral basics and your go-to shoes."
+)
+
+
+def _describe_listing(item: dict) -> str:
+    """One-line description of a listing for the LLM prompt."""
+    colors = ", ".join(item.get("colors", []))
+    tags = ", ".join(item.get("style_tags", []))
+    return (
+        f"{item['title']} (category: {item['category']}; "
+        f"colors: {colors}; style: {tags})"
+    )
+
+
+def _describe_wardrobe_item(item: dict) -> str:
+    """One bullet describing a wardrobe item, including notes if present."""
+    colors = ", ".join(item.get("colors", []))
+    tags = ", ".join(item.get("style_tags", []))
+    line = (
+        f"- {item['name']} (category: {item['category']}; "
+        f"colors: {colors}; style: {tags})"
+    )
+    if item.get("notes"):
+        line += f" — {item['notes']}"
+    return line
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────

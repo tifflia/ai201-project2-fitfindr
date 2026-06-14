@@ -1,5 +1,10 @@
 # Run with 'python -m pytest tests/'
-from tools import search_listings, _size_matches
+import tools
+from tools import search_listings, suggest_outfit, _size_matches
+from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
+
+
+# --- search_listings ---
 
 def test_search_returns_results():
     results = search_listings("vintage graphic tee", size=None, max_price=50)
@@ -51,3 +56,63 @@ def test_size_filter_applied_to_results():
     results = search_listings("platform", size="US 7", max_price=None)
     assert all(_size_matches("US 7", item["size"]) for item in results)
     assert any(item["id"] == "lst_009" for item in results)
+
+
+# --- suggest_outfit ---
+
+# Minimal listing carrying the fields suggest_outfit's prompt actually reads.
+SAMPLE_ITEM = {
+    "id": "lst_test",
+    "title": "Vintage Band Tee",
+    "category": "tops",
+    "style_tags": ["vintage", "grunge", "band tee"],
+    "colors": ["grey", "charcoal"],
+}
+
+def test_suggest_outfit_feeds_real_wardrobe_pieces_into_prompt(monkeypatch):
+    captured = {}
+    def fake_complete(messages, temperature):
+        captured["messages"] = messages
+        return "Pair it with your Chunky white sneakers."
+    monkeypatch.setattr(tools, "_complete", fake_complete)
+
+    result = suggest_outfit(SAMPLE_ITEM, get_example_wardrobe())
+
+    prompt = captured["messages"][-1]["content"]
+    # Non-empty branch must put named wardrobe pieces into the prompt so the
+    # model can reference them by name, and describe the considered item too.
+    assert "Chunky white sneakers" in prompt
+    assert "Baggy straight-leg jeans, dark wash" in prompt
+    assert "Vintage Band Tee" in prompt
+    assert result.strip() != ""
+
+def test_suggest_outfit_empty_wardrobe_asks_for_general_advice(monkeypatch):
+    captured = {}
+    def fake_complete(messages, temperature):
+        captured["messages"] = messages
+        return "This tee is super versatile — style it with denim and boots."
+    monkeypatch.setattr(tools, "_complete", fake_complete)
+
+    result = suggest_outfit(SAMPLE_ITEM, get_empty_wardrobe())
+
+    prompt = captured["messages"][-1]["content"]
+    # Empty wardrobe → general-advice branch, no crash, non-empty result.
+    assert "general styling advice" in prompt.lower()
+    assert result.strip() != ""
+
+def test_suggest_outfit_llm_error_returns_nonempty_fallback(monkeypatch):
+    def boom(messages, temperature):
+        raise RuntimeError("groq unavailable")
+    monkeypatch.setattr(tools, "_complete", boom)
+
+    result = suggest_outfit(SAMPLE_ITEM, get_example_wardrobe())
+    # Must not raise; must return a usable non-empty string.
+    assert isinstance(result, str)
+    assert result.strip() != ""
+
+def test_suggest_outfit_blank_response_returns_nonempty_fallback(monkeypatch):
+    monkeypatch.setattr(tools, "_complete", lambda messages, temperature: "   ")
+
+    result = suggest_outfit(SAMPLE_ITEM, get_empty_wardrobe())
+    # A whitespace-only model reply still yields a non-empty fallback.
+    assert result.strip() != ""
