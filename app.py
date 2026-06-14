@@ -43,8 +43,47 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    # 1. Guard against an empty query — nothing to search for.
+    if not user_query or not user_query.strip():
+        return "Please enter what you're looking for.", "", ""
+
+    # 2. Pick the wardrobe the user selected (default to empty for safety).
+    if wardrobe_choice == "Example wardrobe":
+        wardrobe = get_example_wardrobe()
+    else:
+        wardrobe = get_empty_wardrobe()
+
+    # 3. Run the planning loop.
+    session = run_agent(user_query, wardrobe)
+
+    # 4. Early-exit path: show the error in the listing panel, leave the rest blank.
+    if session["error"]:
+        return session["error"], "", ""
+
+    # 5. Happy path: format the selected listing and return all three panels.
+    listing_text = _format_listing(session["selected_item"])
+    return listing_text, session["outfit_suggestion"], session["fit_card"]
+
+
+def _format_listing(item: dict) -> str:
+    """Render the selected listing dict as readable multi-line text for the UI."""
+    price = item.get("price")
+    price_str = f"${price:g}" if isinstance(price, (int, float)) else "—"
+    lines = [
+        item.get("title", "Untitled listing"),
+        f"{price_str} · {item.get('condition', 'unknown')} condition · {item.get('platform', 'unknown')}",
+    ]
+    if item.get("brand"):
+        lines.append(f"Brand: {item['brand']}")
+    lines.append(f"Size: {item.get('size', 'n/a')}")
+    if item.get("colors"):
+        lines.append(f"Colors: {', '.join(item['colors'])}")
+    if item.get("style_tags"):
+        lines.append(f"Style: {', '.join(item['style_tags'])}")
+    if item.get("description"):
+        lines.append("")
+        lines.append(item["description"])
+    return "\n".join(lines)
 
 
 # ── interface ─────────────────────────────────────────────────────────────────

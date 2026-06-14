@@ -18,7 +18,67 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ───────────────────────────────────────────────────────────────
+
+# Lead-in / filler words stripped from the description so it carries only the
+# keywords that matter for relevance scoring.
+_FILLER_WORDS = {
+    "i", "im", "i'm", "a", "an", "the", "some", "any", "looking", "look",
+    "for", "find", "me", "want", "wanna", "need", "show", "searching",
+    "search", "get", "got", "to", "buy", "something", "thats", "that's",
+    "out", "there", "whats", "what's",
+}
+
+
+def _parse_query(query: str) -> dict:
+    """Pull a description, optional size, and optional max_price out of a query.
+
+    Uses plain regex/string parsing rather than an extra LLM call.
+
+        - max_price: a "under/below/less than/max $N" phrase, or a bare "$N".
+        - size:      a "size X" phrase (X may be slashed, e.g. "M/L").
+        - description: whatever keywords remain after those phrases and a small
+                       set of filler words are stripped.
+
+    Returns a dict with keys "description", "size", "max_price" — exactly the
+    keyword arguments search_listings() expects.
+    """
+    # Strip apostrophes so contractions collapse to the forms already in the
+    # filler set ("i'm" -> "im", "what's" -> "whats") instead of leaving orphan
+    # single-char tokens ("m", "s") behind when the apostrophe is split on below.
+    lowered = query.lower().replace("'", "").replace("’", "")
+    remainder = lowered
+
+    # --- max_price: prefer an explicit ceiling phrase, fall back to a bare $N ---
+    max_price = None
+    price_match = re.search(
+        r"(?:under|below|less than|max(?:imum)?|up to|<=?)\s*\$?\s*(\d+(?:\.\d+)?)",
+        remainder,
+    )
+    if price_match is None:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", remainder)
+    if price_match is not None:
+        max_price = float(price_match.group(1))
+        remainder = remainder[: price_match.start()] + " " + remainder[price_match.end() :]
+
+    # --- size: a "size X" phrase, where X may be a slashed token like "M/L" ---
+    size = None
+    size_match = re.search(r"\bsize\s+([a-z0-9]+(?:\s*/\s*[a-z0-9]+)?)\b", remainder)
+    if size_match is not None:
+        size = size_match.group(1).upper().replace(" ", "")
+        remainder = remainder[: size_match.start()] + " " + remainder[size_match.end() :]
+
+    # --- description: leftover keywords, filler stripped, original order kept ---
+    tokens = re.findall(r"[a-z0-9]+", remainder)
+    keywords = [tok for tok in tokens if tok not in _FILLER_WORDS]
+    description = " ".join(keywords).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +152,40 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: initialize the session — the single source of truth for this run.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into description / size / max_price (regex, no LLM).
+    session["parsed"] = _parse_query(query)
+
+    # Step 3: search listings with the parsed parameters.
+    results = search_listings(**session["parsed"])
+    session["search_results"] = results
+
+    # Early exit: no matches → set an error and stop before the LLM tools run.
+    if not results:
+        session["error"] = (
+            "No listings matched that search. Try fewer keywords, a higher "
+            "price, or dropping the size filter."
+        )
+        return session
+
+    # Step 4: select the top-ranked result to style.
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest an outfit pairing the find with the user's wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+
+    # Step 6: write a shareable fit-card caption for the find.
+    session["fit_card"] = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+
+    # Step 7: done — error stays None on the happy path.
     return session
 
 
