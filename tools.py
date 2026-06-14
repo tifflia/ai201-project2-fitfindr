@@ -274,5 +274,41 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # Guard: no outfit to caption → descriptive message, never an exception.
+    if not outfit or not outfit.strip():
+        return "Can't make a fit card without an outfit suggestion."
+
+    title = new_item.get("title", "this piece")
+    platform = new_item.get("platform", "secondhand")
+    price = new_item.get("price")
+    price_str = f"${price:g}" if isinstance(price, (int, float)) else "a steal"
+
+    system = (
+        "You write short, authentic outfit captions for Instagram/TikTok OOTD "
+        "posts. You sound like a real person hyping a thrift find, not a product "
+        "listing."
+    )
+    user = (
+        "Write a 2-4 sentence caption for a thrifted outfit post.\n"
+        f"Item: {title}\n"
+        f"Price: {price_str}\n"
+        f"Platform: {platform}\n"
+        f"How I'm styling it: {outfit}\n\n"
+        "Mention the item name, the price, and the platform naturally — each "
+        "exactly once. Keep it casual and capture the vibe of the outfit. "
+        "At most one or two emoji, no hashtag spam."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    # Higher temperature than suggest_outfit so captions vary across runs.
+    try:
+        caption = _complete(messages, temperature=1.0).strip()
+    except Exception:
+        return f"Thrifted the {title} for {price_str} on {platform} — and it's a whole vibe."
+
+    return caption or (
+        f"Thrifted the {title} for {price_str} on {platform} — and it's a whole vibe."
+    )

@@ -1,6 +1,6 @@
 # Run with 'python -m pytest tests/'
 import tools
-from tools import search_listings, suggest_outfit, _size_matches
+from tools import search_listings, suggest_outfit, create_fit_card, _size_matches
 from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 
@@ -60,13 +60,16 @@ def test_size_filter_applied_to_results():
 
 # --- suggest_outfit ---
 
-# Minimal listing carrying the fields suggest_outfit's prompt actually reads.
+# Minimal listing carrying the fields suggest_outfit and create_fit_card read
+# (title/category/colors/style_tags for outfits; title/price/platform for caption cards).
 SAMPLE_ITEM = {
     "id": "lst_test",
     "title": "Vintage Band Tee",
     "category": "tops",
     "style_tags": ["vintage", "grunge", "band tee"],
     "colors": ["grey", "charcoal"],
+    "price": 19.0,
+    "platform": "depop",
 }
 
 def test_suggest_outfit_feeds_real_wardrobe_pieces_into_prompt(monkeypatch):
@@ -115,4 +118,48 @@ def test_suggest_outfit_blank_response_returns_nonempty_fallback(monkeypatch):
 
     result = suggest_outfit(SAMPLE_ITEM, get_empty_wardrobe())
     # A whitespace-only model reply still yields a non-empty fallback.
+    assert result.strip() != ""
+
+
+# --- create_fit_card ---
+
+def test_create_fit_card_empty_outfit_returns_error_message():
+    # Hits the guard before any LLM call → deterministic, no key needed.
+    result = create_fit_card("", SAMPLE_ITEM)
+    assert isinstance(result, str)
+    assert result.strip() != ""
+    assert "outfit" in result.lower()
+
+def test_create_fit_card_whitespace_outfit_returns_error_message():
+    result = create_fit_card("   \n  ", SAMPLE_ITEM)
+    assert "outfit" in result.lower()
+
+def test_create_fit_card_prompt_has_item_details_and_high_temp(monkeypatch):
+    captured = {}
+    def fake_complete(messages, temperature):
+        captured["messages"] = messages
+        captured["temperature"] = temperature
+        return "thrifted this vintage band tee off depop for $19 — it's a vibe"
+    monkeypatch.setattr(tools, "_complete", fake_complete)
+
+    outfit = "Pair it with baggy jeans and combat boots."
+    result = create_fit_card(outfit, SAMPLE_ITEM)
+
+    prompt = captured["messages"][-1]["content"]
+    # Name, price, platform, and the styling text must all reach the model.
+    assert "Vintage Band Tee" in prompt
+    assert "depop" in prompt
+    assert "19" in prompt
+    assert outfit in prompt
+    # Higher temperature than suggest_outfit's 0.7 → captions vary across runs.
+    assert captured["temperature"] >= 0.9
+    assert result.strip() != ""
+
+def test_create_fit_card_llm_error_returns_nonempty_fallback(monkeypatch):
+    def boom(messages, temperature):
+        raise RuntimeError("groq unavailable")
+    monkeypatch.setattr(tools, "_complete", boom)
+
+    result = create_fit_card("Pair it with baggy jeans.", SAMPLE_ITEM)
+    assert isinstance(result, str)
     assert result.strip() != ""
