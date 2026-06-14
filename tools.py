@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -69,8 +70,68 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+
+    # Tokenize the query into lowercase keywords (drop 1-char noise).
+    keywords = [tok for tok in re.findall(r"[a-z0-9]+", description.lower()) if len(tok) > 1]
+
+    scored: list[tuple[int, dict]] = []
+    for item in listings:
+        # --- Price filter ---
+        if max_price is not None and item["price"] > max_price:
+            continue
+
+        # --- Size filter (case-insensitive, token-aware: "M" matches "S/M") ---
+        if size is not None and not _size_matches(size, item["size"]):
+            continue
+
+        # --- Relevance scoring by keyword overlap ---
+        score = _relevance_score(keywords, item)
+        if score == 0:
+            continue
+        scored.append((score, item))
+
+    # Best match first. Sort is stable, so ties keep dataset order.
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored]
+
+
+def _size_matches(requested: str, listing_size: str) -> bool:
+    """True if `requested` matches the listing's size, case-insensitively.
+
+    Both sides are split into tokens on separators like "/", whitespace, and
+    parentheses, and every requested token must appear among the listing's
+    tokens. So "M" matches "S/M" or "M/L" (without falsely matching the "S"
+    in "US 7"), and a multi-token size like "US 7" matches "US 7".
+    """
+    def tokens(s: str) -> set[str]:
+        return {tok for tok in re.split(r"[\s/()]+", s.lower()) if tok}
+
+    requested_tokens = tokens(requested)
+    if not requested_tokens:
+        return True
+    return requested_tokens <= tokens(listing_size)
+
+
+def _relevance_score(keywords: list[str], item: dict) -> int:
+    """Score a listing by how many query keywords overlap its text fields.
+
+    Matches in the title and style_tags are weighted higher than matches in
+    the longer free-text description so the most on-topic items rank first.
+    """
+    title = item["title"].lower()
+    description = item["description"].lower()
+    tags = " ".join(item["style_tags"]).lower()
+
+    score = 0
+    for kw in keywords:
+        if kw in title:
+            score += 3
+        if kw in tags:
+            score += 2
+        if kw in description:
+            score += 1
+    return score
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
